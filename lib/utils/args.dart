@@ -108,6 +108,9 @@ void handleHelp() {
     case 'htlc':
       htlcMenu();
       exit(0);
+    case 'ptlc':
+      ptlcMenu();
+      exit(0);
     case 'bridge':
       bridgeMenu();
       exit(0);
@@ -152,6 +155,8 @@ Future<void> handleCli() async {
       await sporkFunctions();
     } else if (command[0].contains('htlc')) {
       await htlcFunctions();
+    } else if (command[0].contains('ptlc')) {
+      await ptlcFunctions();
     } else if (command[0].contains('bridge')) {
       await bridgeFunctions();
     } else if (command[0].contains('liquidity')) {
@@ -185,6 +190,7 @@ void fullMenu() {
   acceleratorMenu();
   sporkMenu();
   htlcMenu();
+  ptlcMenu();
   bridgeMenu();
   liquidityMenu();
   orchestratorMenu();

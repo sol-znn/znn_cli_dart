@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:bip39/bip39.dart' as bip39;
 import 'package:dcli/dcli.dart' hide verbose;
 import 'package:znn_cli_dart/lib.dart';
 import 'package:znn_sdk_dart/znn_sdk_dart.dart';
@@ -90,7 +89,7 @@ Future<void> _createFromMnemonic() async {
         'wallet.createFromMnemonic "${green('mnemonic')}" passphrase [keyStoreName]');
     return;
   }
-  if (!bip39.validateMnemonic(args[1])) {
+  if (!Mnemonic.validateMnemonic(args[1].split(' '))) {
     throw AskValidatorException(red('Invalid mnemonic'));
   }
 

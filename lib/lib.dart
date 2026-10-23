@@ -3,6 +3,7 @@ export 'bridge.dart';
 export 'general.dart';
 export 'global.dart';
 export 'htlc.dart';
+export 'ptlc.dart';
 export 'liquidity.dart';
 export 'orchestrator.dart';
 export 'pillar.dart';

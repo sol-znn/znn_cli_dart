@@ -16,14 +16,19 @@ void ptlcMenu() {
   print('  ${white('PTLC')}');
   print(
       '    ptlc.create tokenStandard amount expirationTime (in hours) pointType pointLock [destination]');
+  print(
+      '    ptlc.createWithReclaimLock tokenStandard amount expirationTime (unix) pointType pointLock destination reclaimPointType reclaimPointLock reclaimProof [adaptorPoint]');
   print('    ptlc.unlock id [witness]');
   print('    ptlc.proxyUnlock id destination witness');
-  print('    ptlc.reclaim id');
+  print('    ptlc.reclaim id [reclaimSignature]');
   print('    ptlc.get id');
   print('    ptlc.inspect blockHash');
-  print('    ptlc.monitor id');
+  print('    ptlc.monitor id [reclaimSignature]');
   print('    ptlc.message id destination pointType');
   print('    ptlc.sign id destination secretKey [pointType]');
+  print(
+      '    ptlc.reclaimMessage creator destination tokenStandard amount expirationTime (unix) pointType pointLock reclaimPointType');
+  print('    ptlc.signReclaim message secretKey [reclaimPointType]');
   print('    ptlc.keygen');
   print('    ptlc.point secret');
   print('    ptlc.tweak point tweak');
@@ -39,6 +44,28 @@ Future<void> ptlcFunctions() async {
     case 'create':
       verbose ? print('Description: Create a ptlc') : null;
       await _create();
+      return;
+
+    case 'createWithReclaimLock':
+      verbose
+          ? print(
+              'Description: Create a ptlc that is reclaimed only with a signature under a reclaim lock')
+          : null;
+      await _createWithReclaimLock();
+      return;
+
+    case 'reclaimMessage':
+      verbose
+          ? print('Description: Display the message a reclaim lock must sign')
+          : null;
+      await _reclaimMessage();
+      return;
+
+    case 'signReclaim':
+      verbose
+          ? print('Description: Sign a reclaim message with a secret key')
+          : null;
+      await _signReclaim();
       return;
 
     case 'unlock':
@@ -168,6 +195,54 @@ String? ptlcRevealProblem(PtlcInfo ptlc, int now) {
   return null;
 }
 
+String? ptlcReclaimExpirationProblem(int expirationTime, int now) {
+  if (expirationTime - now < ptlcRevealMargin) {
+    return 'expirationTime must be at least ${ptlcRevealMargin}s after the frontier momentum ($now)';
+  }
+  if (expirationTime - now > ptlcTimelockMaxHours * 3600) {
+    return 'expirationTime must be at most $ptlcTimelockMaxHours hours after the frontier momentum ($now)';
+  }
+  return null;
+}
+
+Future<String?> ptlcReclaimProofProblem(
+    int chainIdentifier,
+    PtlcInfo terms,
+    int reclaimPointType,
+    List<int> reclaimPointLock,
+    List<int> proof,
+    List<int>? adaptorPoint) async {
+  if (proof.length == ptlcReclaimSignatureSize) {
+    if (adaptorPoint != null) {
+      return 'a complete reclaim signature takes no adaptor point';
+    }
+    if (!await PtlcApi.verifyReclaimSignature(chainIdentifier, terms,
+        reclaimPointType, reclaimPointLock, proof)) {
+      return 'the reclaim signature does not verify for these terms under the reclaim lock';
+    }
+    return null;
+  }
+  if (proof.length == 65) {
+    if (reclaimPointType != ptlcPointTypeBip340) {
+      return 'a pre-signature needs a BIP-340 reclaim lock';
+    }
+    if (adaptorPoint == null) {
+      return 'a pre-signature needs its adaptor point';
+    }
+    if (Secp256k1.parseCompressed(adaptorPoint) == null) {
+      return 'adaptorPoint is not a valid compressed secp256k1 point';
+    }
+    final message =
+        PtlcApi.reclaimMessageOf(chainIdentifier, reclaimPointType, terms);
+    if (!Bip340.adaptorVerify(
+        reclaimPointLock, message, adaptorPoint, proof)) {
+      return 'the pre-signature does not verify for these terms under the reclaim lock';
+    }
+    return null;
+  }
+  return 'reclaimProof must be a 64-byte signature or a 65-byte BIP-340 pre-signature';
+}
+
 bool ptlcCallAccepted(List<int>? data) =>
     data != null &&
     data.length == 8 &&
@@ -229,6 +304,23 @@ Future<PtlcInfo> _getById(Hash id) async {
 }
 
 Future<Momentum> _frontier() async => znnClient.ledger.getFrontierMomentum();
+
+Future<PtlcReclaimLock?> _reclaimLockOf(Hash id) async {
+  try {
+    return await znnClient.embedded.ptlc.getReclaimLockById(id);
+  } catch (e) {
+    return null;
+  }
+}
+
+int? _reclaimPointType(String value) {
+  final pointType = int.tryParse(value);
+  if (pointType == null || !ptlcReclaimPointTypes.contains(pointType)) {
+    print('${red('Error!')} reclaim point type must be 0 (Ed25519) or 1 (BIP-340)');
+    return null;
+  }
+  return pointType;
+}
 
 Future<bool> _lockIsOurKey(PtlcInfo ptlc) async {
   if (ptlc.pointType != ptlcPointTypeEd25519) {
@@ -339,6 +431,118 @@ Future<void> _create() async {
   print('Done');
 }
 
+Future<void> _createWithReclaimLock() async {
+  if (args.length < 10 || args.length > 11) {
+    print('Incorrect number of arguments. Expected:');
+    print(
+        'ptlc.createWithReclaimLock tokenStandard amount expirationTime (unix) pointType pointLock destination reclaimPointType reclaimPointLock reclaimProof [adaptorPoint]');
+    print('Supported reclaim point types:');
+    print('  0: Ed25519 key (32 bytes)');
+    print('  1: BIP-340 key (32 bytes, x-only)');
+    print(
+        'reclaimProof: a 64-byte reclaim signature, or a 65-byte BIP-340 pre-signature followed by its adaptor point');
+    return;
+  }
+
+  TokenStandard tokenStandard = getTokenStandard(args[1]);
+  Token token = await getToken(tokenStandard);
+  BigInt amount = AmountUtils.extractDecimals(args[2], token.decimals);
+  Function color = getColor(tokenStandard);
+
+  if (amount <= BigInt.zero) {
+    print('${red('Error!')} amount must be greater than 0');
+    return;
+  }
+
+  if (!await hasBalance(address, tokenStandard, amount)) {
+    return;
+  }
+
+  final expirationTime = int.tryParse(args[3]);
+  if (expirationTime == null) {
+    print('${red('Error!')} expirationTime must be a unix timestamp.');
+    return;
+  }
+  final frontier = await _frontier();
+  String? problem =
+      ptlcReclaimExpirationProblem(expirationTime, frontier.timestamp);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    return;
+  }
+
+  final pointType = int.tryParse(args[4]);
+  if (pointType == null || !ptlcPointLockSizes.containsKey(pointType)) {
+    print('${red('Error!')} point type ${args[4]} is not supported');
+    return;
+  }
+  final pointLock = _hex(args[5], 'pointLock');
+  problem = Validations.ptlcPointLock(pointType, pointLock);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    return;
+  }
+
+  final destination = parseAddress(args[6]);
+  problem = Validations.ptlcDestination(pointType, destination);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    return;
+  }
+
+  final reclaimPointType = _reclaimPointType(args[7]);
+  if (reclaimPointType == null) {
+    return;
+  }
+  final reclaimPointLock = _hex(args[8], 'reclaimPointLock');
+  problem = Validations.ptlcReclaimLock(reclaimPointType, reclaimPointLock);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    return;
+  }
+
+  final terms = PtlcInfo(
+      id: emptyHash,
+      timeLocked: address,
+      tokenStandard: tokenStandard,
+      amount: amount,
+      expirationTime: expirationTime,
+      pointType: pointType,
+      pointLock: pointLock,
+      destination: destination);
+  final proof = _hex(args[9], 'reclaimProof');
+  final adaptorPoint = args.length == 11 ? _hex(args[10], 'adaptorPoint') : null;
+  problem = await ptlcReclaimProofProblem(frontier.chainIdentifier, terms,
+      reclaimPointType, reclaimPointLock, proof, adaptorPoint);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    print(
+        '  Without a valid signature under the reclaim lock the funds can never be reclaimed. Not sending');
+    return;
+  }
+
+  print(
+      'Creating ptlc with amount ${AmountUtils.addDecimals(amount, token.decimals)} ${color(token.symbol)}');
+  print(
+      '  Point type ${ptlcPointTypeName(pointType)}, point lock ${green(hex.encode(pointLock))}');
+  print(destination == emptyAddress
+      ? '  Can be unlocked to any address the witness is signed for'
+      : '  Can be unlocked only to $destination');
+  print(
+      '  Can be reclaimed after $expirationTime by $address, only with a signature under the ${ptlcPointTypeName(reclaimPointType)} ${hex.encode(reclaimPointLock)}');
+  if (adaptorPoint != null) {
+    print(
+        '  Complete the pre-signature with ${green('ptlc.adaptorComplete')}. Reclaiming publishes the adaptor secret');
+  }
+
+  AccountBlockTemplate block = await send(znnClient.embedded.ptlc
+      .createWithReclaimLock(token, amount, expirationTime, pointType,
+          pointLock, destination, reclaimPointType, reclaimPointLock));
+
+  print('Submitted ptlc with id ${green(block.hash.toString())}');
+  print('Done');
+}
+
 Future<void> _unlock() async {
   if (args.length < 2 || args.length > 3) {
     print('Incorrect number of arguments. Expected:');
@@ -437,15 +641,17 @@ Future<void> _proxyUnlock() async {
 }
 
 Future<void> _reclaim() async {
-  if (args.length != 2) {
+  if (args.length < 2 || args.length > 3) {
     print('Incorrect number of arguments. Expected:');
-    print('ptlc.reclaim id');
+    print('ptlc.reclaim id [reclaimSignature]');
     return;
   }
 
   Hash id = parseHash(args[1]);
   PtlcInfo ptlc = await _getById(id);
-  int now = (await _frontier()).timestamp;
+  PtlcReclaimLock? lock = await _reclaimLockOf(id);
+  Momentum frontier = await _frontier();
+  int now = frontier.timestamp;
 
   if (ptlc.expirationTime > now) {
     print(
@@ -458,11 +664,38 @@ Future<void> _reclaim() async {
     return;
   }
 
+  List<int>? signature;
+  if (lock != null) {
+    if (args.length != 3) {
+      print(
+          '${red('Error!')} Ptlc id ${ptlc.id} has a reclaim lock (${ptlcPointTypeName(lock.pointType)} ${hex.encode(lock.pointLock)}). A reclaim signature is required');
+      return;
+    }
+    signature = _hex(args[2], 'reclaimSignature');
+    String? problem = Validations.ptlcReclaimSignature(signature);
+    if (problem != null) {
+      print('${red('Error!')} $problem');
+      return;
+    }
+    if (!await PtlcApi.verifyReclaimSignature(frontier.chainIdentifier, ptlc,
+        lock.pointType, lock.pointLock, signature)) {
+      print(
+          '${red('Error!')} the reclaim signature does not verify for this ptlc under its reclaim lock');
+      return;
+    }
+  } else if (args.length == 3) {
+    print(
+        '${red('Error!')} Ptlc id ${ptlc.id} has no reclaim lock. Use ptlc.reclaim id');
+    return;
+  }
+
   Token token = await getToken(ptlc.tokenStandard);
   Function color = getColor(ptlc.tokenStandard);
   print(
       'Reclaiming ptlc id ${ptlc.id} with amount ${AmountUtils.addDecimals(ptlc.amount, token.decimals)} ${color(token.symbol)}');
-  await send(znnClient.embedded.ptlc.reclaim(id));
+  await send(signature == null
+      ? znnClient.embedded.ptlc.reclaim(id)
+      : znnClient.embedded.ptlc.reclaimWithSignature(id, signature));
   print('Done');
   print(
       'Use ${green('receiveAll')} to collect your ptlc amount after 2 momentums');
@@ -477,11 +710,11 @@ Future<void> _get() async {
 
   Hash id = parseHash(args[1]);
   PtlcInfo ptlc = await _getById(id);
-  await _printInfo(ptlc, (await _frontier()).timestamp);
+  await _printInfo(ptlc, (await _frontier()).timestamp, await _reclaimLockOf(id));
   print('Done');
 }
 
-Future<void> _printInfo(PtlcInfo ptlc, int now) async {
+Future<void> _printInfo(PtlcInfo ptlc, int now, PtlcReclaimLock? lock) async {
   Token token = await getToken(ptlc.tokenStandard);
   Function color = getColor(ptlc.tokenStandard);
   print(
@@ -496,6 +729,10 @@ Future<void> _printInfo(PtlcInfo ptlc, int now) async {
         '   Can be reclaimed in ${_format(Duration(seconds: ptlc.expirationTime - now))} by ${ptlc.timeLocked}');
   } else {
     print('   Can be reclaimed now by ${ptlc.timeLocked}');
+  }
+  if (lock != null) {
+    print(
+        '   Reclaim lock ${ptlcPointTypeName(lock.pointType)} ${hex.encode(lock.pointLock)}: reclaimed only with a signature under it');
   }
 }
 
@@ -549,24 +786,56 @@ Future<void> _inspect() async {
           '${txArgs[3]} '
           'created by ${block.address}');
       break;
+    case 'CreateWithReclaimLock':
+      print('CreateWithReclaimLock ptlc: '
+          '${AmountUtils.addDecimals(block.amount, block.token!.decimals)} '
+          '${block.token!.symbol} ${txArgs[0]} '
+          '${txArgs[1]} '
+          '${hex.encode(txArgs[2])} '
+          '${txArgs[3]} '
+          'reclaim lock ${txArgs[4]} ${hex.encode(txArgs[5])} '
+          'created by ${block.address}');
+      break;
+    case 'ReclaimWithSignature':
+      print(
+          'ReclaimWithSignature ptlc: id ${red(txArgs[0].toString())} reclaimed by ${block.address} with signature: ${green(hex.encode(txArgs[1]))}');
+      break;
     default:
       print('The account block contains an unknown function call');
   }
 }
 
 Future<void> _monitor() async {
-  if (args.length != 2) {
+  if (args.length < 2 || args.length > 3) {
     print('Incorrect number of arguments. Expected:');
-    print('ptlc.monitor id');
+    print('ptlc.monitor id [reclaimSignature]');
     return;
   }
 
   Hash id = parseHash(args[1]);
   PtlcInfo ptlc = await _getById(id);
+  PtlcReclaimLock? lock = await _reclaimLockOf(id);
   Momentum frontier = await _frontier();
-  await _printInfo(ptlc, frontier.timestamp);
-  print('Monitoring ptlc id ${cyan(ptlc.id.toString())}');
   final chainIdentifier = frontier.chainIdentifier;
+
+  List<int>? reclaimSignature;
+  if (args.length == 3) {
+    if (lock == null) {
+      print(
+          '${red('Error!')} Ptlc id ${ptlc.id} has no reclaim lock. Use ptlc.monitor id');
+      return;
+    }
+    reclaimSignature = _hex(args[2], 'reclaimSignature');
+    if (!await PtlcApi.verifyReclaimSignature(chainIdentifier, ptlc,
+        lock.pointType, lock.pointLock, reclaimSignature)) {
+      print(
+          '${red('Error!')} the reclaim signature does not verify for this ptlc under its reclaim lock');
+      return;
+    }
+  }
+
+  await _printInfo(ptlc, frontier.timestamp, lock);
+  print('Monitoring ptlc id ${cyan(ptlc.id.toString())}');
 
   var lastHeight =
       (await znnClient.ledger.getFrontierAccountBlock(ptlcAddress))?.height ??
@@ -590,7 +859,9 @@ Future<void> _monitor() async {
           continue;
         }
         final f = ptlcFunction(paired.data);
-        if (f == null || f.name == 'Create') {
+        if (f == null ||
+            f.name == 'Create' ||
+            f.name == 'CreateWithReclaimLock') {
           continue;
         }
         final txArgs = f.decode(paired.data);
@@ -605,6 +876,20 @@ Future<void> _monitor() async {
         if (f.name == 'Reclaim') {
           print(
               'Ptlc id ${red(ptlc.id.toString())} reclaimed by ${paired.address}');
+          print('Done');
+          return;
+        }
+        if (f.name == 'ReclaimWithSignature') {
+          final signature = List<int>.from(txArgs[1]);
+          if (lock == null ||
+              !await PtlcApi.verifyReclaimSignature(chainIdentifier, ptlc,
+                  lock.pointType, lock.pointLock, signature)) {
+            print(
+                '${red('Error!')} Ptlc id ${ptlc.id} was reclaimed with a signature that does not verify');
+            exit(-1);
+          }
+          print(
+              'Ptlc id ${red(ptlc.id.toString())} reclaimed by ${paired.address} with signature: ${green(hex.encode(signature))}');
           print('Done');
           return;
         }
@@ -629,8 +914,15 @@ Future<void> _monitor() async {
     if (frontier.timestamp >= ptlc.expirationTime) {
       if (ptlc.timeLocked == address) {
         print('Ptlc id ${red(ptlc.id.toString())} expired');
+        if (lock != null && reclaimSignature == null) {
+          print(
+              '  It has a reclaim lock. Reclaim it with ptlc.reclaim id reclaimSignature');
+          return;
+        }
         print('  Reclaiming ptlc id ${red(ptlc.id.toString())} now... ');
-        await send(znnClient.embedded.ptlc.reclaim(id));
+        await send(reclaimSignature == null
+            ? znnClient.embedded.ptlc.reclaim(id)
+            : znnClient.embedded.ptlc.reclaimWithSignature(id, reclaimSignature));
         print('Done');
         return;
       }
@@ -693,6 +985,80 @@ Future<void> _sign() async {
   }
   print('Point lock: ${hex.encode(publicKey)}');
   print('Witness: ${green(hex.encode(signature))}');
+}
+
+Future<void> _reclaimMessage() async {
+  if (args.length != 9) {
+    print('Incorrect number of arguments. Expected:');
+    print(
+        'ptlc.reclaimMessage creator destination tokenStandard amount expirationTime (unix) pointType pointLock reclaimPointType');
+    return;
+  }
+
+  final creator = parseAddress(args[1]);
+  final destination = parseAddress(args[2]);
+  final tokenStandard = getTokenStandard(args[3]);
+  final token = await getToken(tokenStandard);
+  final amount = AmountUtils.extractDecimals(args[4], token.decimals);
+  final expirationTime = int.tryParse(args[5]);
+  if (expirationTime == null) {
+    print('${red('Error!')} expirationTime must be a unix timestamp.');
+    return;
+  }
+  final pointType = int.tryParse(args[6]);
+  if (pointType == null || !ptlcPointLockSizes.containsKey(pointType)) {
+    print('${red('Error!')} point type ${args[6]} is not supported');
+    return;
+  }
+  final pointLock = _hex(args[7], 'pointLock');
+  final problem = Validations.ptlcPointLock(pointType, pointLock) ??
+      Validations.ptlcDestination(pointType, destination);
+  if (problem != null) {
+    print('${red('Error!')} $problem');
+    return;
+  }
+  final reclaimPointType = _reclaimPointType(args[8]);
+  if (reclaimPointType == null) {
+    return;
+  }
+
+  final chainIdentifier = (await _frontier()).chainIdentifier;
+  print('Chain identifier: $chainIdentifier');
+  print(
+      'Reclaim message: ${green(hex.encode(PtlcApi.reclaimMessage(chainIdentifier, reclaimPointType, creator, destination, tokenStandard, amount, expirationTime, pointType, pointLock)))}');
+}
+
+Future<void> _signReclaim() async {
+  if (args.length < 3 || args.length > 4) {
+    print('Incorrect number of arguments. Expected:');
+    print('ptlc.signReclaim message secretKey [reclaimPointType]');
+    print('  reclaimPointType 0 signs with Ed25519, 1 with BIP-340 (default)');
+    return;
+  }
+
+  final message = _hex(args[1], 'message', 32);
+  final secretKey = _hex(args[2], 'secretKey', 32);
+  final reclaimPointType =
+      args.length == 4 ? _reclaimPointType(args[3]) : ptlcPointTypeBip340;
+  if (reclaimPointType == null) {
+    return;
+  }
+
+  List<int> publicKey;
+  List<int> signature;
+  if (reclaimPointType == ptlcPointTypeEd25519) {
+    publicKey = await Crypto.getPublicKey(secretKey);
+    signature = await Crypto.sign(message, secretKey, publicKey);
+  } else {
+    if (Secp256k1.parseScalar(secretKey) == null) {
+      print('${red('Error!')} secretKey is not a valid secp256k1 scalar');
+      return;
+    }
+    publicKey = Bip340.publicKey(secretKey);
+    signature = Bip340.sign(secretKey, message, _randomBytes(32));
+  }
+  print('Reclaim point lock: ${hex.encode(publicKey)}');
+  print('Reclaim signature: ${green(hex.encode(signature))}');
 }
 
 void _keygen() {

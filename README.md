@@ -9,5 +9,8 @@ Linux: `make linux`
 ## Installation
 Download and extract the [latest version](https://github.com/hypercore-one/znn_cli_dart/releases/).
 
+## PTLC
+The `ptlc.*` commands and how two parties use them are in [docs/ptlc.md](docs/ptlc.md).
+
 ## Notes
 All the required dynamic libraries were copied in the `build/` folder. When Moving the `znn-cli` binary, don't forget to move the libraries as well. 

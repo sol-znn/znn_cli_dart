@@ -12,7 +12,7 @@ dependencies:
   znn_sdk_dart:
     git:
       url: https://github.com/sol-znn/znn_sdk_dart.git
-      ref: ptlc
+      ref: ptlc-v2
   znn_ledger_dart:
     git:
       url: https://github.com/zenon-network/znn_ledger_dart.git
@@ -28,5 +28,5 @@ dependency_overrides:
   znn_sdk_dart:
     git:
       url: https://github.com/sol-znn/znn_sdk_dart.git
-      ref: ptlc
+      ref: ptlc-v2
 

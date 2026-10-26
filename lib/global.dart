@@ -68,6 +68,7 @@ List<String> commandsWithWallet = [
   'ptlc.proxyUnlock',
   'ptlc.reclaim',
   'ptlc.monitor',
+  'ptlc.createWithReclaimLock',
   'bridge.wrap.token',
   'bridge.unwrap.redeem',
   'bridge.unwrap.redeemAll',
@@ -111,6 +112,8 @@ List<String> commandsWithoutWallet = [
   'ptlc.adaptorVerify',
   'ptlc.adaptorComplete',
   'ptlc.adaptorExtract',
+  'ptlc.reclaimMessage',
+  'ptlc.signReclaim',
   'stats.osInfo',
   'stats.networkInfo',
   'stats.processInfo',
@@ -155,6 +158,7 @@ List<String> commandsWithoutConnection = [
   'ptlc.adaptorVerify',
   'ptlc.adaptorComplete',
   'ptlc.adaptorExtract',
+  'ptlc.signReclaim',
 ];
 
 List<String> adminCommands = [

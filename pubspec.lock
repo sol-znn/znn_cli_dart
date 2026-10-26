@@ -798,8 +798,8 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: ptlc
-      resolved-ref: b47e26edf080380f35c332a3b365ddf35e861d99
+      ref: ptlc-v2
+      resolved-ref: cd7caeb2f8970e622e425564a203d508cc084950
       url: "https://github.com/sol-znn/znn_sdk_dart.git"
     source: git
     version: "1.0.0"
